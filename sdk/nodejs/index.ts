@@ -27,6 +27,7 @@ import * as ddosprotection from "./ddosprotection/index";
 import * as devspace from "./devspace/index";
 import * as devtest from "./devtest/index";
 import * as dns from "./dns/index";
+import * as eventgrid from "./eventgrid/index";
 import * as eventhub from "./eventhub/index";
 import * as hdinsight from "./hdinsight/index";
 import * as iot from "./iot/index";
