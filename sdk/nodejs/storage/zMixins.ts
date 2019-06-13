@@ -19,6 +19,7 @@ import { Blob } from "./blob";
 import { Container } from "./container";
 import { getAccountSAS } from "./getAccountSAS";
 import { Queue } from "./queue";
+import { Table } from "./table";
 import { ZipBlob } from "./zipBlob";
 
 import * as appservice from "../appservice";
@@ -194,6 +195,16 @@ Container.prototype.onBlobEvent = function(this: Container, name, args, opts) {
     return new BlobEventSubscription(name, this, functionArgs, opts);
 }
 
+declare module "./queue" {
+    interface Queue {
+        output(): appservice.AzureFunctionOutputBinding;
+    }
+}
+
+Queue.prototype.output = function(this: Queue) {
+    return new QueueOutputBinding(this);
+}
+
 export class BlobEventSubscription extends appservice.EventSubscription<BlobContext, Buffer, void> {
     constructor(
         name: string, container: storage.Container,
@@ -336,7 +347,7 @@ export interface QueueHostSettings extends appservice.HostSettings {
  */
 export type QueueCallback = appservice.Callback<QueueContext, Buffer, void>;
 
-export type QueueEventSubscriptionArgs = util.Overwrite<appservice.CallbackFunctionAppArgs<QueueContext, Buffer, void>, {
+export type QueueEventSubscriptionArgs = util.Overwrite<appservice.CallbackFunctionAppArgs<QueueContext, Buffer, void | Bag>, {
     /**
      * The resource group in which to create the event subscription.  If not supplied, the
      * Queue's resource group will be used.
@@ -354,6 +365,8 @@ export type QueueEventSubscriptionArgs = util.Overwrite<appservice.CallbackFunct
      * be used in their place. 
      */
     hostSettings?: QueueHostSettings;
+
+    outputBindings?: {[key: string]: appservice.AzureFunctionOutputBinding};
 }>;
 
 declare module "./queue" {
@@ -375,7 +388,11 @@ Queue.prototype.onEvent = function(this: Queue, name, args, opts) {
     return new QueueEventSubscription(name, this, functionArgs, opts);
 }
 
-export class QueueEventSubscription extends appservice.EventSubscription<QueueContext, Buffer, void> {
+export interface Bag {
+    [key: string]: any;
+}
+
+export class QueueEventSubscription extends appservice.EventSubscription<QueueContext, Buffer, void | Bag> {
     constructor(
         name: string, queue: Queue,
         args: QueueEventSubscriptionArgs, opts: pulumi.ComponentResourceOptions = {}) {
@@ -389,18 +406,34 @@ export class QueueEventSubscription extends appservice.EventSubscription<QueueCo
         // .connection property of the binding contains the *name* of that app setting key.
         const bindingConnectionKey = "BindingConnectionAppSettingsKey";
 
-        const bindings: QueueBindingDefinition[] = [{
-            name: "queue",
-            type: "queueTrigger",
-            direction: "in",
-            dataType: "binary",
-            queueName: queue.name,
-            connection: bindingConnectionKey,
-        }];
+        let bindings: pulumi.Input<appservice.BindingDefinition[]>;
+        let appSettings2 = {};
+        if (args.outputBindings) {
+            bindings = pulumi.all(Object.entries(args.outputBindings).map(([key, value]) => value.get(key))).apply(bs =>                
+                [<appservice.BindingDefinition>{
+                    name: "queue",
+                    type: "queueTrigger",
+                    direction: "in",
+                    dataType: "binary",
+                    queueName: queue.name,
+                    connection: bindingConnectionKey,
+                },
+                ...bs]
+            );
 
-        // Place the mapping from the well known key name to the storage account connection string in
-        // the 'app settings' object.
-        const appSettingsOutput = args.appSettings || pulumi.output({});
+            const perFunctionSettings = Object.entries(args.outputBindings).map(([_, value]) => value.appSettings);
+            appSettings2 = pulumi.all(perFunctionSettings).apply(items => items.reduce((a, b) => ({ ...a, ...b }), {}));
+        } else
+        {
+            bindings = [<appservice.BindingDefinition>{
+                name: "queue",
+                type: "queueTrigger",
+                direction: "in",
+                dataType: "binary",
+                queueName: queue.name,
+                connection: bindingConnectionKey,
+            }];
+        }
 
         // Place the mapping from the well known key name to the storage account connection string in
         // the 'app settings' object.
@@ -408,8 +441,8 @@ export class QueueEventSubscription extends appservice.EventSubscription<QueueCo
                                 .apply(([resourceGroupName, storageAccountName]) =>
                                 storage.getAccount({ resourceGroupName, name: storageAccountName }));
 
-        const appSettings = pulumi.all([args.appSettings, account.primaryConnectionString]).apply(
-            ([appSettings, connectionString]) => ({ ...appSettings, [bindingConnectionKey]: connectionString }));
+        const appSettings = pulumi.all([args.appSettings, appSettings2, account.primaryConnectionString]).apply(
+            ([appSettings, as2, connectionString]) => ({ ...appSettings, ...as2, [bindingConnectionKey]: connectionString }));
 
         super("azure:storage:QueueEventSubscription", name, bindings, {
             ...args,
@@ -419,5 +452,89 @@ export class QueueEventSubscription extends appservice.EventSubscription<QueueCo
         }, opts);
 
         this.registerOutputs();
+    }
+}
+
+interface QueueOutputBindingDefinition extends appservice.BindingDefinition {
+    name: string;
+    type: "queue";
+    direction: "out";
+    dataType: "binary";
+    queueName: string;
+    connection: string;
+}
+
+export class QueueOutputBinding implements appservice.AzureFunctionOutputBinding {
+    public readonly appSettings: pulumi.Input<{ [key: string]: any; }>;
+
+    private bindingConnectionKey: pulumi.Output<string>;
+    private queueName: pulumi.Output<string>;
+
+    constructor(queue: Queue) {
+        this.bindingConnectionKey = pulumi.interpolate`${queue.storageAccountName}ConnectionStringKey`;
+        const account = pulumi.all([queue.resourceGroupName, queue.storageAccountName])
+                            .apply(([resourceGroupName, storageAccountName]) =>
+                                storage.getAccount({ resourceGroupName, name: storageAccountName }));
+    
+        const appSettings = pulumi.all([account.primaryConnectionString, this.bindingConnectionKey]).apply(
+            ([connectionString, key]) => ({ [key]: connectionString }));
+    
+        this.appSettings = appSettings;
+        this.queueName = queue.name;
+    }
+
+    public get(name: string) {
+
+        return pulumi.all([this.bindingConnectionKey, this.queueName]).apply(([key, queueName]) => (<QueueOutputBindingDefinition>{
+            name: name,
+            type: "queue",
+            direction: "out",
+            dataType: "binary",
+            queueName: queueName,
+            connection: key,
+        }));
+    }
+}
+
+interface TableInputBindingDefinition extends appservice.BindingDefinition {
+    name: string;
+    type: "table";
+    direction: "in";
+    tableName: string;
+    connection: string;
+    partitionKey: string;
+    rowKey: string;
+}
+
+export class TableInputBinding implements appservice.AzureFunctionOutputBinding {
+    public readonly appSettings: pulumi.Input<{ [key: string]: any; }>;
+
+    private bindingConnectionKey: pulumi.Output<string>;
+    private tableName: pulumi.Output<string>;
+
+    constructor(table: Table) {
+        this.bindingConnectionKey = pulumi.interpolate`${table.storageAccountName}ConnectionStringKey`;
+        const account = pulumi.all([table.resourceGroupName, table.storageAccountName])
+                            .apply(([resourceGroupName, storageAccountName]) =>
+                                storage.getAccount({ resourceGroupName, name: storageAccountName }));
+    
+        const appSettings = pulumi.all([account.primaryConnectionString, this.bindingConnectionKey]).apply(
+            ([connectionString, key]) => ({ [key]: connectionString }));
+    
+        this.appSettings = appSettings;
+        this.tableName = table.name;
+    }
+
+    public get(name: string) {
+
+        return pulumi.all([this.bindingConnectionKey, this.tableName]).apply(([key, tableName]) => (<TableInputBindingDefinition>{
+            name: name,
+            type: "table",
+            direction: "in",
+            tableName: tableName,
+            connection: key,
+            partitionKey: "1",
+            rowKey: "1",
+        }));
     }
 }

@@ -2,6 +2,7 @@
 // *** Do not edit by hand unless you're certain you know what you are doing! ***
 
 import * as pulumi from "@pulumi/pulumi";
+import * as location from "../location";
 import * as utilities from "../utilities";
 
 /**
@@ -135,7 +136,7 @@ export class Plan extends pulumi.CustomResource {
     /**
      * Specifies the supported Azure location where the resource exists. Changing this forces a new resource to be created.
      */
-    public readonly location!: pulumi.Output<string>;
+    public readonly location!: pulumi.Output<string | location.Location>;
     /**
      * The maximum number of total workers allowed for this ElasticScaleEnabled App Service Plan.
      */

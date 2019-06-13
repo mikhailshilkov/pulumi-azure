@@ -61,7 +61,7 @@ export interface Context<R extends Result> extends azurefunctions.Context {
  * appropriate.  For async functions, `context.done()` does not need to be called, and instead a Promise
  * containing the result can be returned.
  */
-export type Callback<C extends Context<R>, E, R extends Result> = (context: C, event: E) => Promise<R> | void;
+export type Callback<C extends Context<R>, E, R extends Result> = (context: C, event: E, ...rest: any[]) => Promise<R> | void;
 
 /**
  * CallbackFactory is the signature for a function that will be called once to produce the function
@@ -358,7 +358,7 @@ function combineAppSettings(args: MultiCallbackFunctionAppArgs): pulumi.Output<{
 }
 
 function redirectConsoleOutput<C extends Context<R>, E, R extends Result>(callback: Callback<C, E, R>) {
-    return (context: C, event: E) => {
+    return (context: C, event: E, ...rest: any[]) => {
         // Redirect console logging to context logging.
         console.log = context.log;
         console.error = context.log.error;
@@ -366,7 +366,7 @@ function redirectConsoleOutput<C extends Context<R>, E, R extends Result>(callba
         // tslint:disable-next-line:no-console
         console.info = context.log.info;
 
-        return callback(context, event);
+        return callback(context, event, ...rest);
     };
 }
 
@@ -691,4 +691,9 @@ export function getResourceGroupNameAndLocation(
     const resourceGroupName = util.ifUndefined(args.resourceGroupName, fallbackResourceGroupName);
     const getResult = resourceGroupName.apply(n => core.getResourceGroup({ name: n }));
     return { resourceGroupName, location: getResult.location };
+}
+
+export interface AzureFunctionOutputBinding {
+    get(name: string): pulumi.Input<BindingDefinition>;
+    readonly appSettings: pulumi.Input<{ [key: string]: any; }>;
 }

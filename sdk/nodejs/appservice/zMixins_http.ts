@@ -21,6 +21,7 @@ import * as mod from ".";
 
 import * as core from "../core";
 import * as util from "../util";
+import { version } from "punycode";
 
 /**
  * HTTP request object. Provided to your function when using HttpEventSubscription.
@@ -61,7 +62,12 @@ export interface HttpHostSettings extends mod.HostSettings {
     }
 }
 
-export type HttpEventSubscriptionArgs = util.Overwrite<mod.CallbackFunctionAppArgs<mod.Context<HttpResponse>, HttpRequest, HttpResponse>, {
+export interface ExtendedHttpResponse {
+    response: HttpResponse;
+    [key: string]: any;
+}
+
+export type HttpEventSubscriptionArgs = util.Overwrite<mod.CallbackFunctionAppArgs<mod.Context<HttpResponse>, HttpRequest, HttpResponse | ExtendedHttpResponse>, {
     /**
      * The resource group in which to create the event subscription.  Either [resourceGroupName] or
      * [resourceGroup] must be supplied.
@@ -91,6 +97,8 @@ export type HttpEventSubscriptionArgs = util.Overwrite<mod.CallbackFunctionAppAr
      * be used in their place. 
      */
     hostSettings?: HttpHostSettings;
+
+    outputBindings?: {[key: string]: mod.AzureFunctionOutputBinding};
 }>;
 
 interface HttpBindingDefinition extends mod.BindingDefinition {
@@ -103,7 +111,7 @@ interface HttpBindingDefinition extends mod.BindingDefinition {
  * An Azure Function exposed via an HTTP endpoint that is implemented on top of a
  * JavaScript/TypeScript callback function.
  */
-export class HttpEventSubscription extends mod.EventSubscription<mod.Context<HttpResponse>, HttpRequest, HttpResponse> {
+export class HttpEventSubscription extends mod.EventSubscription<mod.Context<HttpResponse>, HttpRequest, HttpResponse | ExtendedHttpResponse> {
     /**
      * Endpoint where this FunctionApp can be invoked.
      */
@@ -115,21 +123,47 @@ export class HttpEventSubscription extends mod.EventSubscription<mod.Context<Htt
 
         const { resourceGroupName, location } = mod.getResourceGroupNameAndLocation(args, undefined);
 
-        const bindings: HttpBindingDefinition[] = [{
+        let bindings: pulumi.Input<mod.BindingDefinition[]>;
+        let appSettings = args.appSettings;
+        if (args.outputBindings) {
+            bindings = pulumi.all(Object.entries(args.outputBindings).map(([key, value]) => value.get(key))).apply(bs =>                
+                [<mod.BindingDefinition>{
                     authLevel: "anonymous",
                     type: "httpTrigger",
                     direction: "in",
                     name: "req",
                     route: args.route,
                     methods: args.methods,
-                }, {
+                }, <mod.BindingDefinition>{
                     type: "http",
                     direction: "out",
-                    name: "$return",
-                }];
+                    name: "response",
+                },
+                ...bs]
+            );
+
+            const applicationSetting = args.appSettings || {};
+            const perFunctionSettings = Object.entries(args.outputBindings).map(([_, value]) => value.appSettings);
+            appSettings = pulumi.all([applicationSetting, ...perFunctionSettings]).apply(items => items.reduce((a, b) => ({ ...a, ...b }), {}));
+        } else
+        {
+            bindings = [<mod.BindingDefinition>{
+                authLevel: "anonymous",
+                type: "httpTrigger",
+                direction: "in",
+                name: "req",
+                route: args.route,
+                methods: args.methods,
+            }, {
+                type: "http",
+                direction: "out",
+                name: "$result",
+            }];
+        }
 
         super("azure:appservice:HttpEventSubscription", name, bindings, {
             ...args,
+            appSettings,
             location,
             resourceGroupName,
         }, opts);
