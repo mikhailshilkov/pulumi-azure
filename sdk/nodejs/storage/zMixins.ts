@@ -24,6 +24,7 @@ import { ZipBlob } from "./zipBlob";
 import * as appservice from "../appservice";
 import * as core from "../core";
 import * as storage from "../storage";
+import * as eventhub from "../eventhub";
 
 /**
  * Produce a URL with read-only access to a Storage Blob with a Shared Access Signature (SAS).
@@ -435,3 +436,39 @@ export class QueueFunction extends appservice.Function<QueueContext, Buffer, voi
         }], args, appSettings);
     }
 }
+
+declare module "./account" {
+    interface Account {
+        /**
+         * Creates a new subscription to events fired to the handler provided from Event Grid
+         * whenever a new Blob is created in any container of the Storage Account.
+         */
+        onGridBlobCreated(name: string,
+                          args: eventhub.EventGridCallbackArgs<eventhub.StorageBlobCreatedEvent>,
+                          opts?: pulumi.ComponentResourceOptions): eventhub.EventGridCallbackSubscription;
+
+        /**
+         * Creates a new subscription to events fired to the handler provided from Event Grid
+         * whenever a Blob is deleted from any container of the Storage Account.
+         */
+        onGridBlobDeleted(name: string,
+                          args: eventhub.EventGridCallbackArgs<eventhub.StorageBlobDeletedEvent>,
+                          opts?: pulumi.ComponentResourceOptions): eventhub.EventGridCallbackSubscription;
+    }
+}
+
+Account.prototype.onGridBlobCreated = function(this: Account, name, args, opts) {
+    const refinedArgs = {
+        includedEventTypes: ["Microsoft.Storage.BlobCreated"],
+        ...args,
+    };
+    return new eventhub.EventGridCallbackSubscription(name, this, refinedArgs, opts);
+};
+
+Account.prototype.onGridBlobDeleted = function(this: Account, name, args, opts) {
+    const refinedArgs = {
+        includedEventTypes: ["Microsoft.Storage.BlobDeleted"],
+        ...args,
+    };
+    return new eventhub.EventGridCallbackSubscription(name, this, refinedArgs, opts);
+};
